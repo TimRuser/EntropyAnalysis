@@ -4,7 +4,7 @@
 ###################
 #    This package analyzes file entropy (shannon entropy) for forensic or
 #    malware analysis
-#    Copyright (C) 2023  EntropyAnalysis
+#    Copyright (C) 2023, 2024  EntropyAnalysis
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -25,7 +25,7 @@ This package analyzes file entropy (shannon entropy) for forensic or
 malware analysis
 """
 
-__version__ = "0.0.5"
+__version__ = "1.0.0"
 __author__ = "Maurice Lambert"
 __author_email__ = "mauricelambert434@gmail.com"
 __maintainer__ = "Maurice Lambert"
@@ -43,11 +43,12 @@ __all__ = [
     "print_chunks_file_entropy",
     "charts_chunks_file_entropy",
     "print_parts_chunks_file_entropy",
+    "EntropyAnalysis",
 ]
 
 __license__ = "GPL-3.0 License"
 __copyright__ = """
-EntropyAnalysis  Copyright (C) 2023  Maurice Lambert
+EntropyAnalysis  Copyright (C) 2023, 2024  Maurice Lambert
 This program comes with ABSOLUTELY NO WARRANTY.
 This is free software, and you are welcome to redistribute it
 under certain conditions.
@@ -61,23 +62,109 @@ from math import log
 from io import BytesIO
 from _io import _IOBase
 from random import randint
+from functools import cache
 from dataclasses import dataclass
 from urllib.request import urlopen
 from os.path import isfile, getsize
 from collections.abc import Hashable
 from collections import Counter, deque
-from typing import Iterable, Tuple, List
 from sys import stdout, exit, stdin, stderr
 from argparse import ArgumentParser, Namespace
+from typing import Iterable, Tuple, List, TypeVar
 
 try:
+    from numpy import array
     from matplotlib import pyplot
+    from numpy.ma import masked_where
+    from matplotlib.pyplot import Axes
 except ImportError:
     USE_MATPLOTLIB = False
+    Axes = TypeVar("Axes")
 else:
     USE_MATPLOTLIB = True
 
 colors = []
+
+
+class EntropyAnalysis:
+
+    """
+    This class implements an entropy analysis.
+    """
+
+    def __init__(self):
+        self.frequency = Counter()
+        self.entropies = {}
+        self.entropy = 0
+
+    @staticmethod
+    @cache
+    def calcul_entropy(frequency: int, data_length: int) -> float:
+        """
+        This method returns the shannon entropy from a frequence and a length.
+        """
+
+        p = frequency / data_length
+        return p * log(p, 2)
+
+    def get_entropy(self, data: Iterable[Hashable]) -> float:
+        """
+        This method returns the shannon entropy for bytes.
+
+        Greater entropy = more randomness
+        Max entropy: 8
+        Min entropy: 0
+        """
+
+        data_length = len(data)
+
+        if not self.entropies and data_length <= 131072:
+            for frequency in range(1, data_length + 1):
+                p = frequency / data_length
+                self.entropies[frequency] = p * log(p, 2)
+
+        if self.entropies and len(self.entropies) != data_length:
+            self.entropies.clear()
+
+        self.frequency.clear()
+        for char in data:
+            self.frequency[char] += 1
+
+        entropy = 0
+
+        for frequency in self.frequency.values():
+            entropy -= self.entropies.get(frequency) or self.calcul_entropy(
+                frequency, data_length
+            )
+
+        self.entropy = entropy
+        return entropy
+
+    def add_character(self, new_character: int, old_character: int) -> float:
+        """
+        This method adds change the current entropy by
+        removing a character and adding a new character.
+        """
+
+        if isinstance(new_character, bytes):
+            new_character = new_character[0]
+
+        if isinstance(old_character, bytes):
+            old_character = old_character[0]
+
+        if new_character == old_character:
+            return self.entropy
+
+        self.entropy += self.entropies[self.frequency[old_character]]
+        self.entropy += self.entropies.get(self.frequency[new_character], 0)
+
+        self.frequency[old_character] -= 1
+        self.frequency[new_character] += 1
+
+        self.entropy -= self.entropies.get(self.frequency[old_character], 0)
+        self.entropy -= self.entropies[self.frequency[new_character]]
+
+        return self.entropy
 
 
 @dataclass
@@ -130,8 +217,32 @@ def get_chunks_file_entropy(
     for the file.
     """
 
+    analysis = EntropyAnalysis()
+
     while data := file.read(chunk_size):
-        yield shannon_entropy(data)
+        yield analysis.get_entropy(data)
+
+
+def get_characters_file_entropy(
+    file: _IOBase, chunk_size: int = 2048
+) -> Iterable[float]:
+    """
+    This function yields all characters shannon entropy
+    for the file.
+    """
+
+    analysis = EntropyAnalysis()
+    counter = 0
+    characters = [*file.read(chunk_size)]
+
+    yield analysis.get_entropy(characters)
+
+    while data := file.read(1):
+        if counter >= chunk_size:
+            counter = 0
+        yield analysis.add_character(data, characters[counter])
+        characters[counter] = data
+        counter += 1
 
 
 def get_parts_chunks_file_entropy(
@@ -203,14 +314,14 @@ def print_chunks_file_entropy(
         position += chunk_size
 
 
-def charts_chunks_file_entropy(
+def get_plot_data(
     file: _IOBase,
     chunk_size: int = 2048,
     part_size: int = None,
-    sections: List[Section] = [],
-) -> None:
+    all_characters: bool = False,
+) -> List[Tuple[Tuple[int, int], Tuple[float, float]]]:
     """
-    This function prints chunks shannon entropy in console.
+    This function returns data for plots.
     """
 
     plot_data = []
@@ -220,9 +331,13 @@ def charts_chunks_file_entropy(
     step_size = chunk_size if part_size is None else part_size
 
     for score in (
-        get_chunks_file_entropy(file, chunk_size)
-        if part_size is None
-        else get_parts_chunks_file_entropy(file, chunk_size, part_size)
+        get_characters_file_entropy(file, chunk_size)
+        if all_characters
+        else (
+            get_chunks_file_entropy(file, chunk_size)
+            if part_size is None
+            else get_parts_chunks_file_entropy(file, chunk_size, part_size)
+        )
     ):
         plot_data.append(
             ((start_position, end_position), (precedent_entropy, score))
@@ -231,9 +346,88 @@ def charts_chunks_file_entropy(
         end_position += step_size
         precedent_entropy = score
 
+    return plot_data
+
+
+def plot_less_102_steps(
+    plot_data: List[Tuple[Tuple[int, int], Tuple[float, float]]], axes: Axes
+) -> None:
+    """
+    This function adds plots to little chart.
+    """
+
+    not_first = False
+    for positions, scores in plot_data:
+        score1, score2 = scores
+        position1, position2 = positions
+        red, green, blue = get_score_color(score2)
+        color = (red / 255, green / 255, blue / 255)
+        if not_first:
+            axes.plot(positions, scores, color=color)
+        else:
+            not_first = True
+        axes.scatter((position2,), (score2,), color=color)
+
+
+def plot_greater_101_steps(
+    plot_data: List[Tuple[Tuple[int, int], Tuple[float, float]]], axes: Axes
+) -> None:
+    """
+    This function adds plots to large chart.
+    """
+
+    scores = []
+    positions = []
+
+    for (_, position), (_, score) in plot_data:
+        scores.append(score)
+        positions.append(position)
+
+    base_array = array(scores)
+    suspicious = masked_where(base_array < 7.2, base_array)
+    high = masked_where((base_array < 6.0), base_array)
+    normal = masked_where((base_array < 4.0), base_array)
+
+    axes.plot(
+        positions,
+        base_array,
+        "mediumturquoise",
+        positions,
+        normal,
+        "lime",
+        positions,
+        high,
+        "gold",
+        positions,
+        suspicious,
+        "red",
+    )
+
+
+def charts_chunks_file_entropy(
+    file: _IOBase,
+    chunk_size: int = 2048,
+    part_size: int = None,
+    all_characters: bool = False,
+    sections: List[Section] = [],
+) -> None:
+    """
+    This function spwans a charts of chunks shannon entropy.
+    """
+
+    plot_data = get_plot_data(file, chunk_size, part_size, all_characters)
+
     figure, axes = pyplot.subplots()
-    axes.axhline(4, color="g", label="Low entropy")
-    axes.axhline(7.2, color="r", label="Very high and very suspicious entropy")
+    axes.axhline(0, color="mediumturquoise", label="No data")
+    axes.axhline(4, color="lime", label="Low entropy (ascii text)")
+    axes.axhline(6, color="gold", label="Binary entropy (program executable)")
+    axes.axhline(
+        7.2,
+        color="red",
+        label=(
+            "Very high and very suspicious entropy (compression or encryption)"
+        ),
+    )
 
     for section in sections:
         red, green, blue = generate_color()
@@ -247,17 +441,10 @@ def charts_chunks_file_entropy(
             color=(red / 255, green / 255, blue / 255),
         )
 
-    not_first = False
-    for positions, scores in plot_data:
-        score1, score2 = scores
-        position1, position2 = positions
-        red, green, blue = get_score_color(score2)
-        color = (red / 255, green / 255, blue / 255)
-        if not_first:
-            axes.plot(positions, scores, color=color)
-        else:
-            not_first = True
-        axes.scatter((position2,), (score2,), color=color)
+    if len(plot_data) > 102:
+        plot_greater_101_steps(plot_data, axes)
+    else:
+        plot_less_102_steps(plot_data, axes)
 
     axes.legend()
     pyplot.title("Shannon entropy analysis")
@@ -283,26 +470,12 @@ def print_parts_chunks_file_entropy(
         end_position += part_size
 
 
-def shannon_entropy(data: Iterable[Hashable]) -> float:
+def shannon_entropy(data: bytes) -> float:
     """
-    This function returns the shannon entropy for bytes.
-
-    Greater entropy = more randomness
-    Max entropy: 8
-    Min entropy: 0
+    This function returns the shannon entropy for data bytes.
     """
 
-    frequency = Counter()
-    for char in data:
-        frequency[char] += 1
-
-    entropy = 0
-    data_length = len(data)
-    for key in frequency:
-        p = frequency[key] / data_length
-        entropy -= p * log(p, 2)
-
-    return entropy
+    return EntropyAnalysis().get_entropy(data)
 
 
 def test():
@@ -334,7 +507,8 @@ def test():
 
     file = BytesIO(
         urlopen(
-            "https://github.com/mauricelambert/FastRC4/releases/download/v0.0.1/librc4.dll"
+            "https://github.com/mauricelambert/FastRC4/releases/"
+            "download/v0.0.1/librc4.dll"
         ).read()
     )
     print(get_full_file_entropy(file))
@@ -345,7 +519,8 @@ def test():
     print()
     file = BytesIO(
         urlopen(
-            "https://github.com/mauricelambert/FastRC4/releases/download/v0.0.1/librc4.so"
+            "https://github.com/mauricelambert/FastRC4/releases/"
+            "download/v0.0.1/librc4.so"
         ).read()
     )
     print(get_full_file_entropy(file))
@@ -361,7 +536,7 @@ def parse_args() -> Namespace:
     """
 
     parser = ArgumentParser(
-        description="This tool analyze shannon entropy of file."
+        description="This tool analyzes shannon entropy of file."
     )
     environment_group = parser.add_mutually_exclusive_group()
     environment_group.add_argument(
@@ -376,7 +551,10 @@ def parse_args() -> Namespace:
         "--gui",
         "-g",
         action="store_true",
-        help="Force using GUI instead of CLI (this is the default behaviour when GUI is available and matplotlib is installed)",
+        help=(
+            "Force using GUI instead of CLI (this is the default behaviour"
+            " when GUI is available and matplotlib is installed)"
+        ),
     )
     parser.add_argument(
         "--no-colors",
@@ -396,7 +574,10 @@ def parse_args() -> Namespace:
         "--chunk-only",
         "-o",
         action="store_true",
-        help="Use chunk only, instead of chunk and parts, this is faster but less accurate.",
+        help=(
+            "Use chunk only, instead of chunk and parts, "
+            "this is faster but less accurate."
+        ),
     )
     parser.add_argument(
         "--chunk-size",
@@ -416,6 +597,14 @@ def parse_args() -> Namespace:
         "-u",
         action="store_true",
         help="Use URL instead of file path",
+    )
+    parser.add_argument(
+        "--all-characters",
+        action="store_true",
+        help=(
+            "Calcul entropy for all characters, "
+            "not recommended with large file."
+        ),
     )
     parser.add_argument("file", help="File path to analyze or '-' for STDIN.")
     return parser.parse_args()
@@ -477,6 +666,7 @@ def main() -> int:
             part_size=None
             if arguments.chunk_only
             else (arguments.part_size or round(filesize / 100)),
+            all_characters=arguments.all_characters,
         )
 
     file.close()

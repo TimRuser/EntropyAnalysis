@@ -21,7 +21,7 @@ Optional:
 ```bash
 python3 -m pip install EntropyAnalysis
 
-# The following line is optional
+# The following line is optional (requirements for GUI charts)
 python3 -m pip install matplotlib
 ```
 
@@ -43,6 +43,7 @@ EntropyAnalysis.exe          # Using python Windows executable
 
 EntropyAnalysis packed.exe
 EntropyAnalysis -c packed.exe
+EntropyAnalysis --all-characters packed.exe
 EntropyAnalysis -f -C packed.exe
 EntropyAnalysis -p 1024 packed.exe
 EntropyAnalysis -o -k 4096 packed.exe
