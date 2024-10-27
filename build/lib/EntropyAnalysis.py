@@ -322,9 +322,10 @@ def get_plot_data(
     plot_data = []
     start_position = 0
     precedent_entropy = 4
-    end_position = chunk_size
+    # end_position = chunk_size
     step_size = chunk_size if part_size is None else part_size
 
+    """
     for score in (
         get_characters_file_entropy(file, chunk_size)
         if all_characters
@@ -339,6 +340,16 @@ def get_plot_data(
         )
         start_position = end_position
         end_position += step_size
+        precedent_entropy = score """
+
+    for i, score in enumerate(
+        get_characters_file_entropy(file, chunk_size) if all_characters
+        else get_chunks_file_entropy(file, chunk_size) if part_size is None
+        else get_parts_chunks_file_entropy(file, chunk_size, part_size)
+    ):
+        start_position = i * step_size
+        end_position = start_position + step_size
+        plot_data.append(((start_position, end_position), (precedent_entropy, score)))
         precedent_entropy = score
 
     return plot_data
