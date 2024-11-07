@@ -70,7 +70,7 @@ from collections.abc import Hashable
 from collections import Counter, deque
 from sys import stdout, exit, stdin, stderr
 from argparse import ArgumentParser, Namespace
-from typing import Iterable, Tuple, List, TypeVar
+from typing import Iterable, Tuple, List, TypeVar, Optional
 
 try:
     from numpy import array
@@ -388,9 +388,10 @@ def charts_chunks_file_entropy(
     part_size: int = None,
     all_characters: bool = False,
     sections: List[Section] = [],
+    outputFile: Optional[str] = None,
 ) -> None:
     """
-    This function spwans a charts of chunks shannon entropy.
+    This function spawns a charts of chunks shannon entropy.
     """
 
     plot_data = get_plot_data(file, chunk_size, part_size, all_characters)
@@ -422,7 +423,10 @@ def charts_chunks_file_entropy(
     pyplot.xlabel("Offset (Bytes)")
     pyplot.ylabel("Entropie (Bits)")
 
-    pyplot.show()
+    if outputFile:
+        pyplot.savefig(outputFile)
+    else:
+        pyplot.show()
 
 
 def print_parts_chunks_file_entropy(
@@ -580,6 +584,11 @@ def parse_args() -> Namespace:
             "not recommended with large file."
         ),
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="Save the output of matplotlib to a file",
+    )
     parser.add_argument("file", help="File path to analyze or '-' for STDIN.")
     return parser.parse_args()
 
@@ -641,6 +650,7 @@ def main() -> int:
             if arguments.chunk_only
             else (arguments.part_size or round(filesize / 100)),
             all_characters=arguments.all_characters,
+            outputFile=arguments.output
         )
 
     file.close()
